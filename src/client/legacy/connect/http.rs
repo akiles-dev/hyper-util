@@ -90,7 +90,16 @@ struct Config {
     interface: Option<std::ffi::CString>,
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     tcp_user_timeout: Option<Duration>,
+    socket_setup: Option<SocketSetup>,
 }
+
+/// A callback to customize each TCP socket right after it is created and before
+/// it is connected. Lets callers apply platform-specific socket options that
+/// hyper-util doesn't expose directly (e.g. `android_setsocknetwork` to bind a
+/// socket to a specific Android network). It receives the freshly-created
+/// `socket2::Socket` and the destination address; returning an error aborts the
+/// connection attempt to that address.
+pub type SocketSetup = Arc<dyn Fn(&socket2::Socket, &SocketAddr) -> io::Result<()> + Send + Sync>;
 
 #[derive(Default, Debug, Clone, Copy)]
 struct TcpKeepaliveConfig {
@@ -247,6 +256,7 @@ impl<R> HttpConnector<R> {
                 interface: None,
                 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
                 tcp_user_timeout: None,
+                socket_setup: None,
             }),
             resolver,
         }
@@ -367,6 +377,20 @@ impl<R> HttpConnector<R> {
     #[inline]
     pub fn set_reuse_address(&mut self, reuse_address: bool) -> &mut Self {
         self.config_mut().reuse_address = reuse_address;
+        self
+    }
+
+    /// Set a callback to customize each TCP socket right after it is created and
+    /// before it is connected.
+    ///
+    /// This is an escape hatch for platform-specific socket options that this
+    /// connector does not expose directly. For example, on Android you can call
+    /// `android_setsocknetwork` on the socket's fd to bind the connection to a
+    /// specific network (WiFi vs cellular). The callback receives the
+    /// freshly-created `socket2::Socket` and the destination address; returning
+    /// an error aborts the connection attempt to that address.
+    pub fn set_socket_setup(&mut self, setup: Option<SocketSetup>) -> &mut Self {
+        self.config_mut().socket_setup = setup;
         self
     }
 
@@ -834,6 +858,12 @@ fn connect(
     socket
         .set_nonblocking(true)
         .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+
+    // Let the caller customize the socket (e.g. android_setsocknetwork) before
+    // any binding or connect.
+    if let Some(setup) = &config.socket_setup {
+        setup(&socket, addr).map_err(ConnectError::m("tcp socket setup error"))?;
+    }
 
     if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
         if let Err(e) = socket.set_tcp_keepalive(tcp_keepalive) {

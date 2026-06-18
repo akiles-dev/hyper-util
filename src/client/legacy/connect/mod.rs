@@ -73,7 +73,7 @@ use std::{
 use ::http::Extensions;
 
 #[cfg(feature = "tokio")]
-pub use self::http::{HttpConnector, HttpInfo};
+pub use self::http::{HttpConnector, HttpInfo, SocketSetup};
 
 #[cfg(feature = "tokio")]
 pub mod dns;
