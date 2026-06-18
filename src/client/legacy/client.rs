@@ -238,6 +238,32 @@ where
         ResponseFuture::new(self.clone().send_request(req, pool_key))
     }
 
+    /// Pre-establish a pooled connection to the authority of `uri`, without
+    /// sending any request.
+    ///
+    /// This performs DNS resolution, the TCP connect, the TLS handshake and the
+    /// HTTP (HTTP/1 or HTTP/2) protocol handshake, then returns the freshly
+    /// established connection to the idle pool so that a subsequent
+    /// [`request`](Self::request) to the same scheme+authority reuses it instead
+    /// of handshaking again. If an idle pooled connection already exists for the
+    /// authority, this returns immediately without opening a new one.
+    ///
+    /// Only the scheme and authority of `uri` are used; the path is ignored.
+    ///
+    /// This is useful to move the (potentially slow) connection setup off the
+    /// critical path: warm the connection ahead of time, then send the real
+    /// request later and have it reuse the warm connection.
+    pub async fn preconnect(&self, mut uri: Uri) -> Result<(), Error> {
+        let is_http_connect = false;
+        let pool_key = extract_domain(&mut uri, is_http_connect)?;
+        // `connection_for` checks the pool first and only connects if there's no
+        // idle connection. The returned `Pooled` is dropped here, which reinserts
+        // the (still open) connection into the idle pool. For HTTP/2 the
+        // connection already lives in the pool and the dropped handle is a no-op.
+        let _pooled = self.connection_for(pool_key).await?;
+        Ok(())
+    }
+
     async fn send_request(
         self,
         mut req: Request<B>,
